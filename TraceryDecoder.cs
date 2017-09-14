@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Collections.Generic;
 using System;
 using System.Text.RegularExpressions;
@@ -7,98 +6,250 @@ using LitJson;
 using TraceryNet;
 
 public class TraceryGrammar {
+
+  public string source;
+  Dictionary<string, string[]> grammar;
+
+  /// <summary>
+  /// Regex that matches a replacement symbol within a string, including any
+  /// potential save symbols and modifiers.
+  ///
+  /// E.g. Input string "If #[pronoun:#pronoun#][verb:#verb#]pronounplusverb.ed.capitalizeAll# to have a nap..."
+  /// The regex would break down as follows:
+  /// Whole Match: `#[pronoun:#pronoun#][verb:#verb#]pronounplusverb.ed.capitalizeAll#`
+  /// - Group `saves`:
+  /// - - Value: `verb:#verb`
+  /// - - Captures: [`pronoun:#pronoun#`, `verb:#verb#`]
+  /// - Group `symbol`:
+  /// - - Value: `pronounplusverb`
+  /// - Group `modifiers`:
+  /// - - Value: `ed`
+  /// - - Captures: [`ed`, `capitalizeAll`]
+  /// </summary>
+  private static readonly Regex ExpansionRegex = new Regex(@"#(?:\[(?<saves>[^\[\]]+)\])*(?<symbol>.*?)(?:\.(?<modifiers>[^\[\]\.#]+))*#");
+
   /// <summary>
   /// Modifier function table.
   /// </summary>
   public Dictionary<string, Func<string, string>> ModifierLookup;
 
   /// <summary>
+  /// Key/value store for savable data.
+  /// </summary>
+  public Dictionary<string, List<string>> SaveData;
+
+  private static List<List<string>> listPool = new List<List<string>>();
+
+  [ThreadStatic] private static Random random;
+
+  /// <summary>
   /// RNG to pick from multiple rules.
   /// </summary>
-  private Random Random = new Random();
+  [ThreadStatic] private static Random Random {
+    get {
+      return random ?? (random = new Random(unchecked(Environment.TickCount * 31 +
+                                            System.Threading.Thread.CurrentThread.ManagedThreadId)));
+    }
+    set {
+      random = value;
+    }
+  }
 
-  public string source;
-  Dictionary<string, string[]> grammar;
+  public TraceryGrammar(string source) {
+    this.source = source;
+    Decode(source);
 
-  private readonly Regex rgx = new Regex(@"(?<!\[|:)(?!\])#.+?(?<!\[|:)#(?!\])", RegexOptions.IgnoreCase);
+    // Set up the standard modifiers.
+    ModifierLookup = new Dictionary<string, Func<string, string>> {
+      {"a", Modifiers.A},
+      {"beeSpeak", Modifiers.BeeSpeak},
+      {"capitalize", Modifiers.Capitalize},
+      {"capitalizeAll", Modifiers.CapitalizeAll},
+      {"comma", Modifiers.Comma},
+      {"inQuotes", Modifiers.InQuotes},
+      {"s", Modifiers.S},
+      {"ed", Modifiers.Ed},
+      {"titleCase", Modifiers.TitleCase}
+    };
 
-  [ThreadStatic] private static System.Random random;
+    // Initialize SaveData map used for actions.
+    SaveData = new Dictionary<string, string>();
+  }
 
+  /// <summary>
+  /// Resolves the default starting symbol "#origin#".
+  /// </summary>
+  /// <param name="randomSeed">Reliably seeds "random" selection to provide consistent results.</param>
+  /// <returns>A result interpreted from the symbol "#origin#".</returns>
   public string Generate(int? randomSeed = null) {
     return GenerateFromNode("origin", randomSeed);
   }
 
+  /// <summary>
+  /// Resolves the provided symbol from the existing grammar rules.
+  /// </summary>
+  /// <param name="token">Symbol to resolve. Do not provide surrounding #'s.</param>
+  /// <param name="randomSeed">Reliably seeds "random" selection to provide consistent results.</param>
+  /// <returns>The interpreted output string from the grammar rules.</returns>
   public string GenerateFromNode(string token, int? randomSeed = null) {
-    if (randomSeed.HasValue) {
-      random = new System.Random(randomSeed.Value);
-    }
-    // Find modifiers.
-
-    var matchName = token.Replace("#", "");
-
-    if (matchName.Contains(".")) {
-      matchName = matchName.Substring(0, matchName.IndexOf(".", StringComparison.Ordinal));
-    }
-
-    if (grammar.ContainsKey(matchName)) {
-      var modifiers = GetModifiers(token);
-      var resolved = grammar[matchName][Random.Next(grammar[matchName].Length)];
-      resolved = rgx.Replace(resolved, m => GenerateFromNode(m.Groups[0].Value));
-      if (modifiers.Count == 0) {
-        return resolved;
-      }
-
-      resolved = ApplyModifiers(resolved, modifiers);
-      return resolved;
-    } else {
-      return "[" + token + "]";
-    }
+    return Resolve(string.Format("#{0}#", token), randomSeed);
   }
 
   /// <summary>
-  /// Return a list of modifier names from the provided expansion symbol
-  /// Modifiers are extra operations to perform on an expansion symbol.
-  ///
-  /// For instance:
-  ///      #animal.capitalize#
-  /// will flatten into a single animal and capitalize the first character of it's name.
-  ///
-  /// Multiple modifiers can be applied, separated by a .
-  ///      #animal.capitalize.inQuotes#
-  /// ...for example
+  /// Resolves all the replacements in a given string with the corresponding saved data or grammar rules.
   /// </summary>
-  /// <param name="symbol">The symbol to take modifiers from:
-  /// e.g: #animal#, #animal.s#, #animal.capitalize.s#
-  /// </param>
-  /// <returns></returns>
-  private List<string> GetModifiers(string symbol) {
-    var modifiers = symbol.Replace("#", "").Split('.').ToList();
-    modifiers.RemoveAt(0);
-
-    return modifiers;
-  }
-
-
-  public static List<T> Shuffle<T>(IEnumerable<T> list) {
-    var rand = random ??
-               (random = new System.Random(unchecked(Environment.TickCount * 31 +
-                                                     System.Threading.Thread.CurrentThread.ManagedThreadId)));
-
-    var output = new List<T>(list);
-    int n = output.Count;
-    while (n > 1) {
-      n--;
-      int k = rand.Next(n + 1);
-      T value = output[k];
-      output[k] = output[n];
-      output[n] = value;
+  /// <param name="token">String in which to resolve symbols.</param>
+  /// <param name="randomSeed">Reliably seeds "random" selection to provide consistent results.</param>
+  /// <returns>The interpreted string according to saved and grammar data.</returns>
+  public string Resolve(string token, int? randomSeed = null) {
+    if (randomSeed.HasValue) {
+      Random = new System.Random(randomSeed.Value);
     }
-    return output;
+
+    // Find expansion matches.
+    foreach (Match match in ExpansionRegex.Matches(token)) {
+      // Resolve the symbol from saved data or grammar rules, if any.
+      var result = ResolveSymbol(match.Groups["symbol"].Value);
+
+      // Store save symbols in SaveData for this symbol only.
+      var saveKeys = ResolveSaveSymbols(match.Groups["saves"].Captures);
+
+      // Recursively resolve any nested symbols present in the resolved data.
+      result = Resolve(result, randomSeed);
+
+      // Apply modifiers, if any, to the result.
+      result = ApplyModifiers(result, match.Groups["modifiers"].Captures);
+
+      // Replace only the first occurance of the match within the input string.
+      var first = token.IndexOf(match.Value);
+      token = token.Substring(0, first) + result + token.Substring(first + match.Value.Length);
+
+      // Keep saved data in scope of their symbols by popping added keys before continuing.
+      PopSaveKeys(saveKeys);
+    }
+
+    return token;
   }
 
 
-  Dictionary<string, string[]> Decode(string source) {
-    Dictionary<string, string[]> traceryStruct = new Dictionary<string, string[]>();
+  public static List<T> Shuffle<T>(IEnumerable<T> list)
+  {
+      var output = new List<T>(list);
+      int n = output.Count;
+      while (n > 1)
+      {
+          n--;
+          int k = Random.Next(n + 1);
+          T value = output[k];
+          output[k] = output[n];
+          output[n] = value;
+      }
+      return output;
+  }
+
+
+  /// <summary>
+  /// Resolve the symbol from save data first, then a grammar rule if nothing saved,
+  /// or finally just return the string itself if no saved or grammar substitution.
+  /// </summary>
+  /// <param name="symbol">The string to match against.</param>
+  /// <returns>The interpreted string from save data or grammar, if any.</returns>
+  private string ResolveSymbol(string symbol) {
+    if (SaveData.ContainsKey(symbol)) {
+      return SaveData[symbol].Last();
+    }
+    if (grammar.ContainsKey(symbol)) {
+      return grammar[symbol][Random.Next(grammar[symbol].Length)];
+    }
+    return symbol;
+  }
+
+
+  /// <summary>
+  /// Resolves and saves any data marked by `saves` captures.
+  /// </summary>
+  /// <param name="saves">Collection of captures from `saves` Group.</param>
+  /// <returns>List of pushed save keys. Pop these after symbol resolution.</returns>
+  private List<string> ResolveSaveSymbols(CaptureCollection saves) {
+    if (saves.Count == 0) {
+      return null;
+    }
+    var pushedDataKeys = GetOrCreateList();
+
+    foreach (Capture capture in saves) {
+      var save = capture.Value;
+
+      // If it's just [key], then flatten #key#
+      if (!save.Contains(":")) {
+        Resolve(string.Format("#{0}#", save));
+        continue;
+      }
+
+      // For [key:#symbol#], split into key and data.
+      var saveSplit = save.Split(':');
+      var key = saveSplit[0];
+      var data = Resolve(saveSplit[1]);
+
+      // Save resolution of symbol to key in SaveData.
+      // If key already exists, push the new value to the end. Otherwise add it.
+      pushedDataKeys.Add(key);
+      if (SaveData.ContainsKey(key)) {
+        SaveData[key].Add(data);
+      } else {
+        var list = GetOrCreateList();
+        list.Add(data);
+        SaveData[key] = list;
+      }
+    }
+
+    return pushedDataKeys;
+  }
+
+  private void PopSaveKeys(List<string> keys) {
+    if (keys == null || keys.Count == 0) {
+      return;
+    }
+    foreach (var key in keys) {
+      if (!SaveData.ContainsKey(key)) {
+        continue;
+      }
+      SaveData[key].RemoveAt(SaveData.Count - 1);
+      if (SaveData[key].Count == 0) {
+        FreeList(SaveData[key]);
+        SaveData.Remove(key);
+      }
+    }
+    FreeList(keys);
+  }
+
+  /// <summary>
+  /// Helper function to keep from creating lists when unnecessary.
+  /// </summary>
+  /// <returns>A string list from listPool or a new one.</returns>
+  private static List<string> GetOrCreateList() {
+    if (listPool.Count == 0) {
+      return new List<string>();
+    }
+    var list = listPool[0];
+    listPool.RemoveAt(0);
+    return list;
+  }
+
+  /// <summary>
+  /// Helper function to free a list once it's no longer needed.
+  /// </summary>
+  /// <param name="list">The list to free.</param>
+  private static void FreeList(List<string> list) {
+    if (list == null || listPool.Contains(list)) {
+      return;
+    }
+    list.Clear();
+    listPool.Add(list);
+  }
+
+
+  private void Decode(string source) {
+    grammar = new Dictionary<string, string[]>();
     var map = JsonToMapper(source);
     foreach (var key in map.Keys) {
       if (map[key].IsArray) {
@@ -107,13 +258,12 @@ public class TraceryGrammar {
           var entry = map[key][i];
           entries[i] = (string) entry;
         }
-        traceryStruct.Add(key, entries);
+        grammar.Add(key, entries);
       } else if (map[key].IsString) {
         string[] entries = {map[key].ToString()};
-        traceryStruct.Add(key, entries);
+        grammar.Add(key, entries);
       }
     }
-    return traceryStruct;
   }
 
   public static JsonData JsonToMapper(string tracery) {
@@ -130,42 +280,15 @@ public class TraceryGrammar {
     ModifierLookup[name] = func;
   }
 
-  public TraceryGrammar(string source) {
-    this.source = source;
-    this.grammar = Decode(source);
-
-    // Set up the function table
-    ModifierLookup = new Dictionary<string, Func<string, string>> {
-      {"a", Modifiers.A},
-      {"beeSpeak", Modifiers.BeeSpeak},
-      {"capitalize", Modifiers.Capitalize},
-      {"capitalizeAll", Modifiers.CapitalizeAll},
-      {"comma", Modifiers.Comma},
-      {"inQuotes", Modifiers.InQuotes},
-      {"s", Modifiers.S},
-      {"ed", Modifiers.Ed},
-      {"titleCase", Modifiers.TitleCase}
-    };
-  }
-
   /// <summary>
-  /// Iterate over the list of modifiers on the expansion symbol and resolve each individually.
+  /// Resolve each defined modifier on the expansion data.
   /// </summary>
-  /// <param name="resolved">The string to perform the modifications to</param>
-  /// <param name="modifiers">The list of modifier strings</param>
-  /// <returns>The resolved string with modifiers applied to it</returns>
-  private string ApplyModifiers(string resolved, List<string> modifiers) {
-    // Iterate over each modifier
-    foreach (var modifier in modifiers) {
-      // If there's no modifier by this name in the list, skip it
-      if (!ModifierLookup.ContainsKey(modifier))
-        continue;
-
-      // Otherwise execute the function and take the output
-      resolved = ModifierLookup[modifier](resolved);
-    }
-
-    // Give back the string
-    return resolved;
+  /// <param name="data">The string to modify.</param>
+  /// <param name="modifiers">Captured modifier names.</param>
+  /// <returns>The resolved data with modifiers applied.</returns>
+  private string ApplyModifiers(string data, CaptureCollection modifiers) {
+    return modifiers.Where(modName => ModifierLookup.ContainsKey(modName))
+                    .Select(modName => ModifierLookup[modName])
+                    .Aggregate(data, (cume, next) => ModifierLookup[next](cume));
   }
 }
