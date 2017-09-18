@@ -2,55 +2,59 @@ using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using System.Linq;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace UnityTracery {
+  /// <summary>
+  /// A Grammar object as described in @GalaxyKate's tracery.io.
+  /// </summary>
   [Serializable]
   public class TraceryGrammar {
-    public string rawGrammar;
 
-    private JObject grammar;
+    private static readonly Regex open_tag_regex = new Regex(EnforceNonEscaped(@"(<tag>[\[#])"));
+    /// <summary>
+    /// Captures [bracketed] actions in text, which can have inner [actions] as
+    /// well but must be bracket-balanced.
+    /// </summary>
+    private static readonly Regex action_regex = CreateBalancedRegex(@"\[", @"\]");
 
     /// <summary>
-    /// Regex that matches a replacement symbol within a string, including any
-    /// potential actions, symbols, and modifiers. Also catches isolated actions
-    /// not part of a #symbol# group.
-    ///
-    /// E.g. Input string "Uncaptured [soloaction:#soloaction#] content [action0:#action0#][action1:#action1#]#[action2:#action2#][action3:#action3#]symbol.mod1.mod2# ..."
-    /// The first match would break down as:
-    /// Whole Match: `[action0:action0]`
-    /// - Group `actions`:
-    /// - - Value: `soloaction:#soloaction#`
-    /// - - Captures: [`soloaction:#soloaction#`]
-    ///
-    /// The second match would break down as:
-    /// - Group: `actions`:
-    /// - - Value: `action1:#action1#`
-    /// - - Captures: [`action0:#action0#]`, `[action1:#action1#`]
-    ///
-    /// The third and final match would break down as:
-    /// Whole Match: `#[action2:#action2#][action3:#action3#]symbol.mod1.mod2#`
-    /// - Group `inneractions`:
-    /// - - Value: `action3:#action3#`
-    /// - - Captures: [`action2:#action2#`, `action3:#action3#`]
-    /// - Group `symbol`:
-    /// - - Value: `symbol`
-    /// - Group `modifiers`:
-    /// - - Value: `mod2`
-    /// - - Captures: [`mod`, `mod2`]
+    /// Matches #tags#, which can have inner [actions] with their own #tags#, but
+    /// must be bracket-balanced.
     /// </summary>
-    private static readonly Regex ExpansionRegex = new Regex(@"(?:(?:(?!=#)|(?<!#))(?:\[(?<actions>[^\[\]]+)\])+)|(?:#(?:\[(?<inneractions>[^\[\]]+)\])*(?<symbol>.*?)(?:\.(?<modifiers>[^\[\]\.#]+))*#)");
+    private static readonly Regex tag_regex = CreateBalancedRegex(@"\#", @"\#");
+
+    /// <summary>
+    /// Matches non-escaped '.' characters within a tag to separate symbol from modifiers.
+    /// </summary>
+    private static readonly Regex modifier_regex = new Regex(EnforceNonEscaped(@"\.")));
+
+    /// <summary>
+    /// Separates [save:option 1, #deephashoption#] actions into key `save` and capture Group `options`.
+    /// </summary>
+    private static readonly Regex action_components_regex = new Regex(string.Format(@"
+        (?<key>(?:[^:]|{{0}})*)
+        (?<postkey>{{1}}(?:(?<options>(?:{{2}}|[^,])*)*){{3}}?)?$",
+        EnforceEscaped(":"),
+        EnforceNonEscaped(":"),
+        EnforceEscaped(","),
+        EnforceNonEscaped(",")), RegexOptions.IgnorePatternWhitespace);
+
+    public string rawGrammar;
+
+    /// <summary>
+    /// Key/value store for grammar rules.
+    /// </summary>
+    public JSONObject grammar;
+
+    /// <summary>
+    /// Key/value store for savable data.
+    /// </summary>
+    private JSONObject saveData;
 
     /// <summary>
     /// Modifier function table.
     /// </summary>
     public Dictionary<string, Func<string, string>> ModifierLookup;
-
-    /// <summary>
-    /// Key/value store for savable data.
-    /// </summary>
-    private Dictionary<string, List<string>> saveData;
 
     public TraceryGrammar(string source) {
       rawGrammar = (source ?? "").Trim();
@@ -72,7 +76,7 @@ namespace UnityTracery {
       };
 
       // Initialize saveData map used for actions.
-      saveData = new Dictionary<string, List<string>>();
+      saveData = new JSONObject();
     }
 
     /// <summary>
@@ -81,137 +85,75 @@ namespace UnityTracery {
     /// <param name="randomSeed">Reliably seeds "random" selection to provide consistent results.</param>
     /// <returns>A result interpreted from the symbol "#origin#".</returns>
     public string Generate(int? randomSeed = null) {
-      return Resolve("#origin#", randomSeed);
+      var result = Resolve("#origin#", randomSeed);
+      saveData.Clear();
+      return result;
     }
 
     /// <summary>
     /// Resolves all the replacements in a given string with the corresponding saved data or grammar rules.
     /// </summary>
-    /// <param name="token">String in which to resolve symbols.</param>
+    /// <param name="input">String in which to resolve symbols.</param>
     /// <param name="randomSeed">Reliably seeds "random" selection to provide consistent results.</param>
     /// <returns>The interpreted string according to saved and grammar data.</returns>
-    public string Resolve(string token, int? randomSeed = null) {
+    public string Resolve(string input, int? randomSeed = null) {
       if (randomSeed.HasValue) {
-        JArray.SeedRandom(randomSeed);
+        JSONObjectExtensions.SeedRandom(randomSeed.Value);
       }
 
-      List<string> outerActionKeys = null;
-
-      // Find expansion matches.
-      foreach (Match match in ExpansionRegex.Matches(token)) {
-        // If `actions` group had any captures, this is an isolated action set.
-        // Actions registered by themselves apply to the entire token from this point on.
-        if (PushActions(match.Groups["actions"].Captures, ref outerActionKeys)) {
-          continue;
-        }
-
-        // Resolve the symbol from saved data or grammar rules, if any.
-        var result = ResolveSymbol(match.Groups["symbol"].Value);
-
-        // Store save symbols within #'s in saveData for this match only.
-        List<string> actionKeys = null;
-        PushActions(match.Groups["inneractions"].Captures, ref actionKeys);
-
-        // Recursively resolve any nested symbols present in the resolved data.
-        result = Resolve(result, randomSeed);
-
-        // Apply modifiers, if any, to the result.
-        result = ApplyModifiers(result, match.Groups["modifiers"].Captures);
-
-        // Replace only the first occurance of the match within the input string.
-        var first = token.IndexOf(match.Value);
-        token = token.Substring(0, first) + result + token.Substring(first + match.Value.Length);
-
-        // Keep saved data in scope of their symbols by popping added keys before continuing.
-        PopActions(actionKeys);
+      var openMatch = open_tag_regex.Match(input);
+      if (!openMatch.Success) {
+        return input;
       }
 
-      // Now pop the save data applied outside the inner #'s.
-      PopActions(outerActionKeys);
+      var prefix = input.Substring(0, openMatch.Index);
+      var rest = input.Substring(openMatch.Index);
 
-      return token;
+      if (openMatch.Groups["tag"].Value == "[") {
+        return prefix + ResolveAction(rest);
+      } else if (openMatch.Groups["tag"].Value == "#") {
+        return prefix + ResolveTag(rest);
+      }
+
+      // Should never get here, but return input as-is if we do.
+      return input;
     }
 
     /// <summary>
-    /// Resolve the symbol from save data first, then a grammar rule if nothing saved,
-    /// or finally just return the string itself if no saved or grammar substitution.
+    /// Resolve the action match found within the input string.
     /// </summary>
-    /// <param name="symbol">The string to match against.</param>
-    /// <returns>The interpreted string from save data or grammar, if any.</returns>
-    private string ResolveSymbol(string symbol) {
-      if (saveData.ContainsKey(symbol)) {
-        return saveData[symbol].Last();
+    /// <param name="input">Original input string.</param>
+    /// <returns>The input string with the match replaced by its resolved output.</returns>
+    private string ResolveAction(string input) {
+      var match = action_regex.Match(input);
+      if (!match.Success) {
+        // No match starting here, shave off the open tag character and resolve the rest.
+        return input.Substring(0, 1) + Resolve(input.Substring(1));
       }
-      var rule = grammar[symbol] ?? symbol;
-      return rule.Type == JTokenType.Array ? ((JArray)rule).Random : rule;
+      var actionKey = PushAction(match.Groups["content"]);
+      var output = Resolve(input.Substring(match.Index + match.Value.Length));
+      PopAction(actionKey);
+      return output;
     }
 
     /// <summary>
-    /// Resolves and saves any actions marked by `actions` captures.
+    /// Resolve the tag match found within the input string.
     /// </summary>
-    /// <param name="actions">Collection of captures from `actions` Group.</param>
-    /// <param name="keyList">List to add action keys to. Initialize if null.</param>
-    /// <returns>Whether there were any captures in this group..</returns>
-    private bool PushActions(CaptureCollection actions, ref List<string> keyList) {
-      if (actions.Count == 0) {
-        return false;
+    /// <param name="input">Original input string.</param>
+    /// <returns>The input string with the match replaced by its resolved output.</returns>
+    private string ResolveTag(string input) {
+      var match = tag_regex.Match(input);
+      if (!match.Success) {
+        // No match starting here, shave off the open tag character and resolve the rest.
+        return input.Substring(0, 1) + Resolve(input.Substring(1));
       }
-
-      List<string> pushedDataKeys = null;
-      foreach (Capture capture in actions) {
-        var save = capture.Value;
-
-        // If it's just [#key#], then flatten #key#
-        if (!save.Contains(":")) {
-          Resolve(string.Format("{0}", save));
-          continue;
-        }
-
-        // For [key:#symbol#], split into key and data.
-        var saveSplit = save.Split(':');
-        var key = saveSplit[0];
-        var data = Resolve(saveSplit[1]);
-
-        // Save resolution of symbol to key in saveData.
-        // If key already exists, push the new value to the end. Otherwise add it.
-        if (pushedDataKeys == null) {
-          pushedDataKeys = ListPool.GetOrCreateList<string>();
-        }
-        if (keyList == null) {
-          keyList = ListPool.GetOrCreateList<string>();
-        }
-        pushedDataKeys.Add(key);
-        keyList.Add(key);
-        if (saveData.ContainsKey(key)) {
-          saveData[key].Add(data);
-        } else {
-          saveData[key] = ListPool.GetOrCreateList<string>();
-          saveData[key].Add(data);
-        }
-      }
-
-      return true;
-    }
-
-    /// <summary>
-    /// Pops the most recent entry for each action in keys.
-    /// Returns any empty lists to ListPool, as well as keys List itself.
-    /// </summary>
-    /// <param name="keys">Names of actions to pop.</param>
-    private void PopActions(List<string> keys) {
-      if (keys == null) {
-        return;
-      }
-      foreach (var key in keys) {
-        if (!saveData.ContainsKey(key)) {
-          continue;
-        }
-        saveData[key].RemoveAt(saveData[key].Count - 1);
-        if (saveData[key].Count == 0) {
-          saveData[key].FreeList();
-        }
-      }
-      keys.FreeList();
+      // Resolve the inner text, which may contain nested actions and tags.
+      var innerText = Resolve(match.Groups["content"].Value);
+      // To find modifiers, split string on non-escaped '.'s.
+      var modifiers = modifier_regex.Split(innerText);
+      modifiers[0] = ResolveSymbol(modifiers[0]);
+      innerText = ApplyModifiers(modifiers);
+      return innerText + Resolve(input.Substring(match.Value.Length));
     }
 
     /// <summary>
@@ -224,36 +166,172 @@ namespace UnityTracery {
     }
 
     /// <summary>
-    /// Resolve each defined modifier on the expansion data.
+    /// Applies found modifier functions to a symbol.
     /// </summary>
-    /// <param name="data">The string to modify.</param>
-    /// <param name="modifiers">Captured modifier names.</param>
-    /// <returns>The resolved data with modifiers applied.</returns>
-    private string ApplyModifiers(string data, CaptureCollection modifiers) {
-      foreach (Capture modName in modifiers) {
-        if (!ModifierLookup.ContainsKey(modName.Value)) {
-          continue;
-        }
-        data = ModifierLookup[modName.Value](data);
+    /// <param name="modifiers">First entry is text to modify. All others are modifiers.</param>
+    /// <return>The first entry modified by modifiers found.</return>
+    private string ApplyModifiers(string[] modifiers) {
+      var baseText = modifiers[0];
+      for (var i = 1; i < modifiers.Length; i++) {
+        modifiers[0] = ModifierLookup[modifiers[i]](baseText);
       }
-      return data;
+      return baseText;
     }
 
-    private static bool ParseRulesJson() {
-      if (rawGrammar.Length == 0) {
-        return false;
+
+    /// <summary>
+    /// Resolve the symbol from save data first, then a grammar rule if nothing saved,
+    /// or finally just return the string itself if no saved or grammar substitution.
+    /// </summary>
+    /// <param name="symbol">The string to match against.</param>
+    /// <returns>The interpreted string from save data or grammar, if any.</returns>
+    private string ResolveSymbol(string symbol) {
+      if (saveData[symbol]) {
+        return saveData[symbol][saveData[symbol].Count - 1].Random().str;
       }
-      if (rawGrammar[0] != '{') {
-        return false;
+      if (grammar[symbol] != null) {
+        if (grammar[symbol].IsArray) {
+          return grammar[symbol].Random().str;
+        } else if (grammar[symbol].IsString) {
+          return grammar[symbol].str;
+        }
+      }
+      return symbol;
+    }
+
+    /// <summary>
+    /// Resolves and saves the content inside [action] brackets.
+    /// </summary>
+    /// <param name="action">Action group caught in action_regex.</param>
+    /// <returns>The key data was saved from within Group, if any.</returns>
+    private string PushAction(Group action) {
+      if (!action.Success || action.Length == 0) {
+        return null;
       }
 
-      try {
-        var token = JToken.Parse(json);
-        grammar = token as JObject;
-        return grammar != null;
-      } catch (JsonReaderException e) {
+      var resolved = Resolve(action.Value);
+      var match = action_components_regex.Match(resolved);
+      // If it's just [content] (without a separating ":"), don't save anything.
+      if (!match.Success || !match.Groups["postkey"].Success) {
+        return null;
+      }
+
+      var key = match.Groups["key"].Value;
+      var options = match.Groups["options"].Captures;
+
+      // If action is "POP", pop the selected key instead of saving it.
+      if (options.Count == 1 && options[0].Value == "POP") {
+        PopAction(key);
+        return null;
+      }
+
+      JSONObject values = JSONObject.arr;
+      foreach (var option in options) {
+        values.Add(Resolve(option));
+      }
+
+      if (!saveData[key]) {
+        saveData[key] = JSONObject.arr;
+      }
+      saveData[key].Add(values);
+    }
+
+    /// <summary>
+    /// Pops the most recent entry for the save data key.
+    /// </summary>
+    /// <param name="key">Names of action to pop.</param>
+    private void PopAction(string key) {
+      if (key == null) {
+        return;
+      }
+      if (!saveData[key]) {
+        return;
+      }
+      saveData[key].RemoveAt(saveData[key].Count - 1);
+      if (saveData[key].Count == 0) {
+        saveData.RemoveField(key);
+      }
+    }
+
+    private bool ParseRulesJson() {
+      grammar = new JSONObject(rawGrammar);
+      if (!grammar.IsObject) {
+        grammar = null;
         return false;
       }
+      UnityEngine.Debug.Log("Parsed grammar:\n" + grammar);
+      return true;
+    }
+
+    /// <summary>
+    /// Creates a string for use in a regex that enforces only even number of escape
+    /// character '\' by opening a Group every time an odd-number '\' is matched and
+    /// closing the Group when an even one is matched.
+    /// </summary>
+    /// <remarks>
+    /// {0}         Evaluates to the provided prefix + `esc`, or empty if none.
+    ///             This allows multiple uses of this in the same repeated group
+    ///             such as for left and right braces.
+    /// Broken down:
+    /// (?<=              Start positive lookbehind.
+    ///   (?:\\           Start non-capturing Group followed by an escape character '\'.
+    ///     (?({0})       Conditional: if the `{0}` Group is open:
+    ///       (?<-{0}>)   Close the Group `{0}`.
+    ///     |             Otherwise
+    ///       (?<{0}>)    Open the Group `{0}`.
+    ///     )
+    ///   )*              Match any number of times to capture all leading '\'s.
+    /// )                 End lookbehind.
+    /// (?({0}))          Conditional: if `{0}` Group is open:
+    ///   (?!)            Fail the match.
+    /// )
+    /// </remarks>
+    /// </summary>
+    /// <param name="match">The content that should be preceeded only by even number of '\' characters.</param>
+    /// <param name="prefix">Prefix to the `esc` Group. Use to include multiple unescape sequences in same section.</param>
+    /// <returns>Regex-ready string that adds lookbehind for even number of '\' characters.</returns>
+    private static string EnforceNonEscaped(string match, string prefix="") {
+      return string.Format(@"(?<=(?:\\(?({{0}})(?<-{{0}}>)|(?<{{0}}>)))*)(?({{0}})(?!)){{1}}", prefix + "esc", match);
+    }
+
+    /// <summary>
+    /// Like EnforceNonEscaped, but instead enforces positive lookbehind for an
+    /// odd number of '\' characters.
+    /// </summary>
+    /// <param name="match">The content that must be escaped.</param>
+    /// <param name="prefix">Prefix to the `esc` Group. Use to include multiple escape sequences in same section.</param>
+    /// <returns>Regex-ready string that adds lookbehind for odd number of '\' characters.</returns>
+    private static string EnforceEscaped(string match, string prefix="") {
+      return string.Format(@"(?<=(?:\\(?({{0}})(?<-{{0}}>)|(?<{{0}}>)))*)(?({{0}})(?<-{{0}})|(?!)){{1}}", prefix + "esc", match);
+    }
+
+    /// <summary>
+    /// Creates a regex which captures between two tags and balances open and close
+    /// brackets '[]' in between them.
+    /// </summary>
+    /// <remarks>
+    /// The regexes for capturing actions and symbols are so similar, differing
+    /// only in the open/close tags, no reason to define the entire thing twice.
+    /// </remarks>
+    /// <param name="openTag">Tag to open regex group.</param>
+    /// <param name="closeTag">Tag to close regex group.</param>
+    /// <returns>A regex for capturing bracket-balanced content between two tags.</returns>
+    private static Regex CreateBalancedRegex(string openTag, string closeTag) {
+      return new Regex(string.Format(@"
+          ^{{0}}                # Match EnforceNonEscaped(openTag).
+          (?<content>           # Capture the following in the `content` Group.
+            (?:                 # Non capturing group: match the following 3 items...
+              (?<BR>{{1}}\[)    # 1. Open Group `BR` when non-escaped `[` is matched (EnforceNonEscaped(`[`, `l`)).
+              |(?<-BR>{{2}}\])  # 2. Close Group `BR` when non-escaped `]` is matched (EnforceNonEscaped(`]`, `r`)).
+              |[^\[\]]*         # 3. Match any non-bracket character.
+            )*?                 # ...any number of times, as few times as possible.
+            (?(BR)(?!))         # If Group `BR` is open, fail match (balance open and close brackets within Group `capture`).
+          )                     # End capture Group `content`.
+          {{3}}                 # Match EnforceNonEscaped(closeTag)",
+          EnforceNonEscaped(openTag),
+          EnforceNonEscaped(@"\[", "l"),
+          EnforceNonEscaped(@"\]", "r"),
+          EnforceNonEscaped(closeTag)), RegexOptions.IgnorePatternWhitespace);
     }
   }
 }

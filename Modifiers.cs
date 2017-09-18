@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Text.RegularExpressions;
 using System.Globalization;
 
 namespace UnityTracery {
@@ -7,10 +6,12 @@ namespace UnityTracery {
   /// A static class containing all of the built-in ("universal") modifiers that can be applied.
   /// </summary>
   static class Modifiers {
+    private static readonly Regex title_case_regex = new Regex(@"(?=^|\s)([a-z])");
+
     /// <summary>
     /// Punctuation used to end a sentence.
     /// </summary>
-    private static List<char> sentencePunctuation = new List<char> {',', '.', '!', '?'};
+    private static readonly string sentence_punctuation = ",.!?";
 
     /// <summary>
     /// List of all vowels.
@@ -65,10 +66,14 @@ namespace UnityTracery {
     /// <param name="str">The string to modify.</param>
     /// <returns>The modified string.</returns>
     public static string Comma(string str) {
-      var lastChar = str[str.Length - 1];
+      if (str.Length == 0) {
+        return ",";
+      }
+      var lastChar = str.Substring(0, 1);
 
-      if (sentencePunctuation.Contains(lastChar))
+      if (sentence_punctuation.Contains(lastChar)) {
         return str;
+      }
 
       return str + ",";
     }
@@ -118,8 +123,6 @@ namespace UnityTracery {
       default:
         return str + "ed" + rest;
       }
-
-      return str;
     }
 
     /// <summary>
@@ -158,7 +161,7 @@ namespace UnityTracery {
     /// <param name="str">The string to modify.</param>
     /// <returns>The modified string.</returns>
     public static string TitleCase(string str) {
-      return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(str);
+      return title_case_regex.Replace(str, "$1");
     }
 
     /// <summary>
