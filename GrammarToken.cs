@@ -1,5 +1,5 @@
 ﻿using System.Collections.Generic;
-
+using System.Linq;
 
 namespace UnityTracery {
   enum TagType {
@@ -149,6 +149,10 @@ namespace UnityTracery {
 
     protected virtual string innerText { get { return Raw ?? Resolved; } }
 
+    public override string ToString() {
+      return string.Format("Raw: {0}\nResolved: {1}\nIndecesOfInterest: {2}", Raw, Resolved, IndecesOfInterest.Aggregate("", (cume, ind) => cume + ", " + ind.ToString()));
+    }
+
     public GrammarToken(TraceryGrammar grammar, int start, GrammarToken parent) {
       Raw = "";
       Grammar = grammar;
@@ -195,7 +199,7 @@ namespace UnityTracery {
         return;
       }
       for (var i = 0; i < IndecesOfInterest.Count; i++) {
-        if (start < IndecesOfInterest[i]) {
+        if (start <= IndecesOfInterest[i]) {
           IndecesOfInterest[i] -= difference;
           if (IndecesOfInterest[i] < 0) {
             IndecesOfInterest.RemoveAt(i);
@@ -229,6 +233,9 @@ namespace UnityTracery {
       var start = IndecesOfInterest[region - 1] + 1;
       var end = region == IndecesOfInterest.Count ? resolvedOrRaw.Length : IndecesOfInterest[region];
       var length = end - start;
+      if (length < 0) {
+        return "";
+      }
       return resolvedOrRaw.Substring(start, length);
     }
 
@@ -284,9 +291,10 @@ namespace UnityTracery {
       if (IsResolved) {
         return;
       }
-      // String also needs to be added to parent string for replacement.
+      // String also needs to be added to parent string for replacement,
+      // but only literally (treat as escaped).
       if (Parent != null) {
-        Parent.AddChar(ch, escaped);
+        Parent.AddChar(ch, true);
       }
       if (escaped) {
         Raw += ch;
