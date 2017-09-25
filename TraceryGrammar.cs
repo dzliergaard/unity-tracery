@@ -7,7 +7,6 @@ namespace UnityTracery {
   /// <summary>
   /// A Grammar object as described in @GalaxyKate's tracery.io.
   /// </summary>
-  [Serializable]
   public class TraceryGrammar {
     /// <summary>
     /// Finds escape characters that are not preceeded by an odd number of escape characters.
@@ -17,7 +16,7 @@ namespace UnityTracery {
     /// <summary>
     /// The raw json grammar string.
     /// </summary>
-    public string rawGrammar;
+    public string RawGrammar;
 
     /// <summary>
     /// Key/value store for grammar rules.
@@ -35,7 +34,7 @@ namespace UnityTracery {
     public Dictionary<string, Func<string, string>> ModifierLookup;
 
     public TraceryGrammar(string source) {
-      rawGrammar = (source ?? "").Trim();
+      RawGrammar = (source ?? "").Trim();
       if (!ParseRulesJson()) {
         throw new Exception("Input grammar is not valid JSON.");
       }
@@ -53,7 +52,6 @@ namespace UnityTracery {
         {"titleCase", Modifiers.TitleCase}
       };
 
-      // Initialize SaveData map used for actions.
       SaveData = new JSONObject();
     }
 
@@ -259,7 +257,7 @@ namespace UnityTracery {
     }
 
     private bool ParseRulesJson() {
-      Grammar = new JSONObject(rawGrammar);
+      Grammar = new JSONObject(RawGrammar);
       if (!Grammar.IsObject) {
         Grammar = null;
         return false;
