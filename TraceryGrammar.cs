@@ -66,7 +66,6 @@ namespace UnityTracery {
     /// <returns>A result interpreted from the symbol "#origin#".</returns>
     public string Generate(int? randomSeed = null) {
       var result = Parse("#origin#", randomSeed);
-      SaveData.Clear();
       return result;
     }
 

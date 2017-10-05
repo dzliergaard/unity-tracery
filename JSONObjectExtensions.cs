@@ -6,7 +6,7 @@ namespace UnityTracery {
   /// Also provides means to seed the randomness.
   /// </summary>
   public static class JSONObjectExtensions {
-    private static Random random = new Random();
+    private static System.Random random = new System.Random();
 
     /// <summary>
     /// Get a random entry from a JSONArray or JSONObject.
@@ -42,7 +42,7 @@ namespace UnityTracery {
     }
 
     public static void SeedRandom(int randomSeed) {
-      random = new Random(randomSeed);
+      random = new System.Random(randomSeed);
     }
   }
 }
