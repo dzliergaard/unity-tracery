@@ -144,7 +144,6 @@ namespace UnityTracery {
     public string Resolved;
     public bool IsResolved;
     public List<GrammarToken> Children;
-    public List<string> BrokenDown;
     public List<int> IndecesOfInterest;
 
     protected virtual string innerText { get { return Raw ?? Resolved; } }
