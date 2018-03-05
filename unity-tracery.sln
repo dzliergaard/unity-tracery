@@ -1,0 +1,29 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 11.00
+# Visual Studio 2010
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "unity-tracery", "Assembly-CSharp.csproj", "{3658BF00-64F6-0C97-5B80-39D61E1B56FF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "unity-tracery", "Assembly-CSharp-Editor.csproj", "{6C40B2CB-5881-B22C-3864-97A9702AD223}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3658BF00-64F6-0C97-5B80-39D61E1B56FF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3658BF00-64F6-0C97-5B80-39D61E1B56FF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3658BF00-64F6-0C97-5B80-39D61E1B56FF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3658BF00-64F6-0C97-5B80-39D61E1B56FF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6C40B2CB-5881-B22C-3864-97A9702AD223}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6C40B2CB-5881-B22C-3864-97A9702AD223}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6C40B2CB-5881-B22C-3864-97A9702AD223}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6C40B2CB-5881-B22C-3864-97A9702AD223}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(MonoDevelopProperties) = preSolution
+		StartupItem = Assembly-CSharp.csproj
+	EndGlobalSection
+EndGlobal
